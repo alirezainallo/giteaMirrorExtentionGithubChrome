@@ -13,3 +13,5 @@
 #gitea-mirror-panel button { margin-top:13px; padding:7px 12px; border:0; border-radius:6px; background:#0969da; color:#fff; cursor:pointer; }
 #gitea-mirror-panel .error { color:#cf222e; font-size:12px; margin-top:8px; }
 #gitea-mirror-panel a { color:#0969da; }
+.gitea-mirror-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.gitea-mirror-actions button { margin-top:0 !important; }

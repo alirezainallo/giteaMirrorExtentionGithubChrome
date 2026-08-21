@@ -41,7 +41,24 @@ if (match && !document.getElementById("gitea-mirror-helper")) {
       return;
     }
     const mirror = current.mirrored;
-    panel.innerHTML = `<h3>${button.title}</h3><p>${mirror?.mirror_updated ? `Last Gitea update: ${new Date(mirror.mirror_updated).toLocaleString()}` : ""}</p>${current.config ? `<a href="${current.config.giteaUrl}/${current.config.giteaOwner}/${repo.name}" target="_blank">Open Gitea mirror</a>` : ""}`;
+    const canSync = current?.state === "stale";
+    panel.innerHTML = `<h3>${button.title}</h3><p>${mirror?.mirror_updated ? `Last Gitea update: ${new Date(mirror.mirror_updated).toLocaleString()}` : ""}</p><div class="gitea-mirror-actions">${current.config ? `<a href="${current.config.giteaUrl}/${current.config.giteaOwner}/${repo.name}" target="_blank">Open Gitea mirror</a>` : ""}${canSync ? `<button type="button" class="sync">Update mirror now</button>` : ""}</div><div class="error"></div>`;
+    if (canSync) panel.querySelector(".sync").onclick = async () => {
+      const syncButton = panel.querySelector(".sync");
+      const error = panel.querySelector(".error");
+      syncButton.disabled = true;
+      syncButton.textContent = "Update requested…";
+      const result = await request({ type: "sync-mirror", repo });
+      if (result.error) {
+        error.textContent = result.error;
+        syncButton.disabled = false;
+        syncButton.textContent = "Update mirror now";
+      } else {
+        error.style.color = "#1a7f37";
+        error.textContent = "Gitea accepted the update request. Checking again shortly…";
+        setTimeout(refresh, 3000);
+      }
+    };
   };
   refresh();
 }

@@ -67,6 +67,8 @@ When saving, Chrome asks for permission to access your Gitea domain; approve it.
 | Red | No mirror with that name exists under the selected Gitea owner. |
 | Gray | The extension is checking status or has not been configured yet. |
 
+When the status is orange, open the button panel and select **Update mirror now** to ask Gitea to queue an immediate pull-mirror synchronization. The button reports that the request was accepted; cloning/fetching still happens asynchronously on the Gitea server.
+
 ## Security and troubleshooting
 
 - Tokens are stored only in `chrome.storage.local` in the current Chrome profile. They are never placed in a clone URL or repository.

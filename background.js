@@ -27,7 +27,9 @@ async function giteaFetch(config, path, init = {}) {
     const body = await response.text();
     throw new Error(`Gitea (${response.status}): ${body || response.statusText}`);
   }
-  return response.status === 204 ? null : response.json();
+  if (response.status === 204) return null;
+  const body = await response.text();
+  return body.trim() ? JSON.parse(body) : null;
 }
 
 async function githubRepo(repo, token) {
@@ -96,6 +98,17 @@ async function createMirror(repo) {
   return { state: "creating", target: targetUrl(config, repo) };
 }
 
+async function syncMirror(repo) {
+  const config = await settings();
+  if (!config) return { state: "setup" };
+  await giteaFetch(
+    config,
+    `/repos/${encodeURIComponent(config.giteaOwner)}/${encodeURIComponent(repo.name)}/mirror-sync`,
+    { method: "POST" }
+  );
+  return { ok: true };
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
     if (message.type === "get-settings") return { config: await settings() };
@@ -110,6 +123,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
     if (message.type === "status") return await status(message.repo);
     if (message.type === "mirror") return await createMirror(message.repo);
+    if (message.type === "sync-mirror") return await syncMirror(message.repo);
     throw new Error("Unknown request");
   })().then(sendResponse).catch((error) => sendResponse({ error: error.message }));
   return true;
