@@ -50,6 +50,24 @@ async function githubRepo(repo, token) {
   return response.json();
 }
 
+async function starredRepos(profile) {
+  const config = await settings();
+  const token = config?.githubToken;
+  const endpoint = token
+    ? "https://api.github.com/user/starred"
+    : `https://api.github.com/users/${encodeURIComponent(profile)}/starred`;
+  const repositories = [];
+  for (let page = 1; ; page += 1) {
+    const response = await fetch(`${endpoint}?per_page=100&page=${page}`, {
+      headers: { Accept: "application/vnd.github+json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+    });
+    if (!response.ok) throw new Error(`GitHub (${response.status}): cannot list starred repositories`);
+    const batch = await response.json();
+    repositories.push(...batch.map((item) => ({ owner: item.owner.login, name: item.name })));
+    if (batch.length < 100) return repositories;
+  }
+}
+
 function sourceCloneUrl(repo, config) {
   // Gitea receives the GitHub token separately; never place it in a clone URL.
   return `https://github.com/${repo.owner}/${repo.name}.git`;
@@ -109,6 +127,32 @@ async function syncMirror(repo) {
   return { ok: true };
 }
 
+async function mirrorStarred(profile) {
+  const config = await settings();
+  if (!config) return { error: "Configure Gitea Mirror Helper before mirroring starred repositories." };
+  const repositories = await starredRepos(profile);
+  const summary = { total: repositories.length, created: 0, skipped: 0, failed: [] };
+  // Process sequentially so Gitea is not flooded with clone jobs.
+  for (const repo of repositories) {
+    try {
+      // Any existing Gitea repository is left untouched, even if it is not a
+      // mirror. This prevents an accidental migration attempt into a name clash.
+      try {
+        await giteaFetch(config, `/repos/${encodeURIComponent(config.giteaOwner)}/${encodeURIComponent(repo.name)}`);
+        summary.skipped += 1;
+        continue;
+      } catch (error) {
+        if (!error.message.includes("Gitea (404)")) throw error;
+      }
+      await createMirror(repo);
+      summary.created += 1;
+    } catch (error) {
+      summary.failed.push(`${repo.owner}/${repo.name}: ${error.message}`);
+    }
+  }
+  return summary;
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
     if (message.type === "get-settings") return { config: await settings() };
@@ -124,6 +168,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === "status") return await status(message.repo);
     if (message.type === "mirror") return await createMirror(message.repo);
     if (message.type === "sync-mirror") return await syncMirror(message.repo);
+    if (message.type === "mirror-starred") return await mirrorStarred(message.profile);
     throw new Error("Unknown request");
   })().then(sendResponse).catch((error) => sendResponse({ error: error.message }));
   return true;

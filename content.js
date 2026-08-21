@@ -1,3 +1,34 @@
+const starredProfile = new URLSearchParams(location.search).get("tab") === "stars" && location.pathname.match(/^\/([^/]+)\/?$/)?.[1];
+if (starredProfile && !document.getElementById("gitea-starred-mirror-helper")) {
+  const root = document.createElement("div");
+  root.id = "gitea-starred-mirror-helper";
+  root.innerHTML = `<button id="gitea-starred-mirror-button">⇄ Mirror starred repositories</button><section id="gitea-starred-mirror-panel" hidden></section>`;
+  document.body.append(root);
+  const button = root.querySelector("button");
+  const panel = root.querySelector("section");
+  button.onclick = () => {
+    panel.hidden = !panel.hidden;
+    if (panel.hidden) return;
+    panel.innerHTML = `<h3>Mirror all starred repositories?</h3><p>Existing Gitea mirrors will be skipped. New mirrors are created one at a time.</p><button type="button">Start mirroring</button><div class="error"></div>`;
+    panel.querySelector("button").onclick = async () => {
+      const start = panel.querySelector("button");
+      const resultBox = panel.querySelector(".error");
+      start.disabled = true;
+      start.textContent = "Processing starred repositories…";
+      const result = await chrome.runtime.sendMessage({ type: "mirror-starred", profile: starredProfile });
+      if (result.error) {
+        resultBox.textContent = result.error;
+        start.disabled = false;
+        start.textContent = "Start mirroring";
+      } else {
+        resultBox.style.color = "#1a7f37";
+        resultBox.textContent = `Done: ${result.created} created, ${result.skipped} already mirrored/skipped, ${result.failed.length} failed.${result.failed.length ? `\n${result.failed.join("\n")}` : ""}`;
+        start.textContent = "Completed";
+      }
+    };
+  };
+}
+
 const nwo = document.querySelector('meta[name="octolytics-dimension-repository_nwo"]')?.content;
 const match = nwo?.match(/^([^/]+)\/([^/]+)$/) || location.pathname.match(/^\/([^/]+)\/([^/]+)\/?(?:$|tree\/|blob\/|issues|pulls|actions|commits|settings)/);
 if (match && !document.getElementById("gitea-mirror-helper")) {

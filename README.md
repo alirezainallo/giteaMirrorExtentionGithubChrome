@@ -69,6 +69,10 @@ When saving, Chrome asks for permission to access your Gitea domain; approve it.
 
 When the status is orange, open the button panel and select **Update mirror now** to ask Gitea to queue an immediate pull-mirror synchronization. The button reports that the request was accepted; cloning/fetching still happens asynchronously on the Gitea server.
 
+## Mirror starred repositories
+
+On a GitHub profile's **Stars** tab (for example, `https://github.com/your-name?tab=stars`), the extension shows a **Mirror starred repositories** button. Confirming the action lists your starred repositories and handles them one at a time. Any repository that already exists in the configured Gitea owner is skipped; only missing mirrors are created. A GitHub token is recommended for this feature and required when the starred list includes private repositories.
+
 ## Security and troubleshooting
 
 - Tokens are stored only in `chrome.storage.local` in the current Chrome profile. They are never placed in a clone URL or repository.
