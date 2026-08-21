@@ -1,0 +1,15 @@
+#gitea-mirror-helper { position:fixed; right:22px; bottom:22px; z-index:2147483647; font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+#gitea-mirror-button { width:48px; height:48px; border:0; border-radius:50%; box-shadow:0 4px 16px #0005; color:#fff; cursor:pointer; font-size:22px; font-weight:700; }
+#gitea-mirror-button[data-state="fresh"] { background:#2da44e; }
+#gitea-mirror-button[data-state="stale"] { background:#bf8700; }
+#gitea-mirror-button[data-state="missing"] { background:#cf222e; }
+#gitea-mirror-button[data-state="setup"], #gitea-mirror-button[data-state="loading"] { background:#57606a; }
+#gitea-mirror-panel { position:absolute; right:0; bottom:60px; width:330px; padding:16px; border:1px solid #d0d7de; border-radius:8px; background:#fff; color:#24292f; box-shadow:0 8px 24px #0003; }
+#gitea-mirror-panel[hidden] { display:none; }
+#gitea-mirror-panel h3 { margin:0 0 10px; font-size:16px; }
+#gitea-mirror-panel p { margin:0 0 12px; line-height:1.45; }
+#gitea-mirror-panel label { display:block; margin:9px 0 3px; font-weight:600; font-size:12px; }
+#gitea-mirror-panel input { width:100%; box-sizing:border-box; padding:7px; border:1px solid #d0d7de; border-radius:6px; }
+#gitea-mirror-panel button { margin-top:13px; padding:7px 12px; border:0; border-radius:6px; background:#0969da; color:#fff; cursor:pointer; }
+#gitea-mirror-panel .error { color:#cf222e; font-size:12px; margin-top:8px; }
+#gitea-mirror-panel a { color:#0969da; }

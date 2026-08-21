@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Gitea Mirror Helper",
+  "version": "1.0.0",
+  "description": "Create and monitor Gitea mirrors from GitHub repository pages.",
+  "permissions": ["storage"],
+  "host_permissions": ["https://github.com/*", "https://api.github.com/*"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "background": { "service_worker": "background.js", "type": "module" },
+  "content_scripts": [
+    {
+      "matches": ["https://github.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": { "default_title": "Gitea Mirror Helper" }
+}
