@@ -31,10 +31,20 @@ async function giteaFetch(config, path, init = {}) {
 }
 
 async function githubRepo(repo, token) {
-  const response = await fetch(`https://api.github.com/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`, {
-    headers: { Accept: "application/vnd.github+json", ...(token ? { Authorization: `Bearer ${token}` } : {}) }
+  const url = `https://api.github.com/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`;
+  const request = (accessToken) => fetch(url, {
+    headers: { Accept: "application/vnd.github+json", ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}) }
   });
-  if (!response.ok) throw new Error(`GitHub (${response.status}): cannot read this repository`);
+  let response = await request(token);
+  // A restricted fine-grained token can return 404 even for a public repo.
+  // Retrying anonymously keeps public mirroring usable in that case.
+  if (token && response.status === 404) response = await request("");
+  if (!response.ok) {
+    if (response.status === 404) {
+      throw new Error("GitHub cannot access this repository. For a private repository, edit your fine-grained token and add this repository under Repository access (with Contents: Read), or use a classic token with repo scope.");
+    }
+    throw new Error(`GitHub (${response.status}): cannot read this repository`);
+  }
   return response.json();
 }
 

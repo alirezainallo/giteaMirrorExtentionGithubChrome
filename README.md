@@ -9,7 +9,7 @@ A Manifest V3 Chrome extension that adds a floating mirror-status control to Git
 3. Open a GitHub repository page. On first use, click the floating button and enter:
    - Your Gitea base URL and destination username/owner.
    - A Gitea personal access token with repository write access.
-   - A GitHub fine-grained token with **Contents: Read** access for repositories you want to mirror (needed for private repositories; it also enables accurate freshness checks).
+   - A GitHub fine-grained token with **Contents: Read** access for repositories you want to mirror (needed for private repositories; it also enables accurate freshness checks). Under **Repository access**, explicitly choose the repository (or “All repositories”).
 
 The extension requests Chrome host permission only for the Gitea origin you enter. Tokens are held in `chrome.storage.local` and never put into a repository URL.
 
