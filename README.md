@@ -71,7 +71,7 @@ When the status is orange, open the button panel and select **Update mirror now*
 
 ## Mirror starred repositories
 
-On a GitHub profile's **Stars** tab (for example, `https://github.com/your-name?tab=stars`), the extension shows a **Mirror starred repositories** button. Confirming the action lists your starred repositories and handles them one at a time. Any repository that already exists in the configured Gitea owner is skipped; only missing mirrors are created. A GitHub token is recommended for this feature and required when the starred list includes private repositories.
+On a GitHub profile's **Stars** tab (for example, `https://github.com/your-name?tab=stars`), the extension shows a **Mirror starred repositories** button. Confirming the action lists your starred repositories and handles them one at a time. Any repository that already exists in the configured Gitea owner is skipped; only missing mirrors are created. The live dashboard shows current repository, batch completion percentage, mirror coverage percentage, status counts, and an itemized list of existing, queued, and failed mirrors. A GitHub token is recommended for this feature and required when the starred list includes private repositories.
 
 ## Security and troubleshooting
 

@@ -1,4 +1,5 @@
 const SETTINGS_KEY = "giteaMirrorSettings";
+const STARRED_PROGRESS_KEY = "giteaStarredMirrorProgress";
 
 async function settings() {
   const result = await chrome.storage.local.get(SETTINGS_KEY);
@@ -127,30 +128,72 @@ async function syncMirror(repo) {
   return { ok: true };
 }
 
+async function saveStarredProgress(progress) {
+  await chrome.storage.local.set({ [STARRED_PROGRESS_KEY]: progress });
+}
+
 async function mirrorStarred(profile) {
   const config = await settings();
   if (!config) return { error: "Configure Gitea Mirror Helper before mirroring starred repositories." };
+  const previous = (await chrome.storage.local.get(STARRED_PROGRESS_KEY))[STARRED_PROGRESS_KEY];
+  if (previous?.running) return { alreadyRunning: true };
   const repositories = await starredRepos(profile);
-  const summary = { total: repositories.length, created: 0, skipped: 0, failed: [] };
+  const progress = {
+    profile,
+    running: true,
+    startedAt: new Date().toISOString(),
+    completedAt: null,
+    current: null,
+    total: repositories.length,
+    processed: 0,
+    mirrored: 0,
+    queued: 0,
+    existing: 0,
+    failed: 0,
+    items: repositories.map((repo) => ({ ...repo, status: "pending" }))
+  };
+  await saveStarredProgress(progress);
   // Process sequentially so Gitea is not flooded with clone jobs.
-  for (const repo of repositories) {
+  for (const [index, repo] of repositories.entries()) {
+    const item = progress.items[index];
+    progress.current = `${repo.owner}/${repo.name}`;
+    item.status = "checking";
+    await saveStarredProgress(progress);
     try {
       // Any existing Gitea repository is left untouched, even if it is not a
       // mirror. This prevents an accidental migration attempt into a name clash.
       try {
-        await giteaFetch(config, `/repos/${encodeURIComponent(config.giteaOwner)}/${encodeURIComponent(repo.name)}`);
-        summary.skipped += 1;
+        const existing = await giteaFetch(config, `/repos/${encodeURIComponent(config.giteaOwner)}/${encodeURIComponent(repo.name)}`);
+        if (existing.mirror) {
+          item.status = "mirrored";
+          progress.mirrored += 1;
+        } else {
+          item.status = "existing";
+          progress.existing += 1;
+        }
         continue;
       } catch (error) {
         if (!error.message.includes("Gitea (404)")) throw error;
       }
+      item.status = "creating";
+      await saveStarredProgress(progress);
       await createMirror(repo);
-      summary.created += 1;
+      item.status = "queued";
+      progress.queued += 1;
     } catch (error) {
-      summary.failed.push(`${repo.owner}/${repo.name}: ${error.message}`);
+      item.status = "failed";
+      item.error = error.message;
+      progress.failed += 1;
+    } finally {
+      progress.processed += 1;
+      progress.current = null;
+      await saveStarredProgress(progress);
     }
   }
-  return summary;
+  progress.running = false;
+  progress.completedAt = new Date().toISOString();
+  await saveStarredProgress(progress);
+  return progress;
 }
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -169,6 +212,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message.type === "mirror") return await createMirror(message.repo);
     if (message.type === "sync-mirror") return await syncMirror(message.repo);
     if (message.type === "mirror-starred") return await mirrorStarred(message.profile);
+    if (message.type === "get-starred-progress") return (await chrome.storage.local.get(STARRED_PROGRESS_KEY))[STARRED_PROGRESS_KEY] || null;
     throw new Error("Unknown request");
   })().then(sendResponse).catch((error) => sendResponse({ error: error.message }));
   return true;

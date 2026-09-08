@@ -6,26 +6,47 @@ if (starredProfile && !document.getElementById("gitea-starred-mirror-helper")) {
   document.body.append(root);
   const button = root.querySelector("button");
   const panel = root.querySelector("section");
+  const escapeHtml = (value) => String(value).replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
+  let progress = null;
+  const render = () => {
+    if (!progress || progress.profile !== starredProfile) {
+      panel.innerHTML = `<h3>Mirror all starred repositories?</h3><p>Existing Gitea mirrors will be skipped. New mirrors are created one at a time.</p><button type="button" class="start">Start mirroring</button><div class="error"></div>`;
+      panel.querySelector(".start").onclick = start;
+      return;
+    }
+    const coverage = progress.total ? Math.round(((progress.mirrored + progress.queued) / progress.total) * 100) : 100;
+    const completion = progress.total ? Math.round((progress.processed / progress.total) * 100) : 100;
+    const visibleItems = progress.items.filter((item) => item.status !== "pending");
+    panel.innerHTML = `<h3>Starred mirror dashboard</h3><div class="mirror-metrics"><strong>${coverage}%</strong><span>mirror coverage (${progress.mirrored + progress.queued}/${progress.total})</span><strong>${completion}%</strong><span>batch processed (${progress.processed}/${progress.total})</span></div><div class="mirror-progress"><i style="width:${completion}%"></i></div><p class="mirror-current">${progress.running ? `Now processing: <b>${escapeHtml(progress.current || "preparing next repository…")}</b>` : "Batch completed."}</p><div class="mirror-counts"><span>Existing mirrors: ${progress.mirrored}</span><span>Queued: ${progress.queued}</span><span>Non-mirror existing: ${progress.existing}</span><span>Failed: ${progress.failed}</span></div><h4>Live repository list</h4><ul class="mirror-live-list">${visibleItems.map((item) => `<li><span class="mirror-state ${item.status}">${item.status}</span><span>${escapeHtml(item.owner)}/${escapeHtml(item.name)}</span>${item.error ? `<small>${escapeHtml(item.error)}</small>` : ""}</li>`).join("") || "<li>Waiting to start…</li>"}</ul>${progress.running ? "" : `<button type="button" class="start">Run again</button>`}`;
+    panel.querySelector(".start")?.addEventListener("click", start);
+  };
+  const start = async () => {
+    const control = panel.querySelector(".start");
+    if (control) { control.disabled = true; control.textContent = "Starting…"; }
+    // The dashboard is updated through chrome.storage while this request remains open.
+    chrome.runtime.sendMessage({ type: "mirror-starred", profile: starredProfile }).then(async (result) => {
+      if (result?.alreadyRunning) {
+        progress = await chrome.runtime.sendMessage({ type: "get-starred-progress" });
+        render();
+      } else if (result?.error) {
+        const error = panel.querySelector(".error");
+        if (error) error.textContent = result.error;
+      }
+    }).catch((error) => {
+      const errorBox = panel.querySelector(".error");
+      if (errorBox) errorBox.textContent = error.message;
+    });
+  };
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes.giteaStarredMirrorProgress) {
+      progress = changes.giteaStarredMirrorProgress.newValue;
+      if (!panel.hidden) render();
+    }
+  });
   button.onclick = () => {
     panel.hidden = !panel.hidden;
     if (panel.hidden) return;
-    panel.innerHTML = `<h3>Mirror all starred repositories?</h3><p>Existing Gitea mirrors will be skipped. New mirrors are created one at a time.</p><button type="button">Start mirroring</button><div class="error"></div>`;
-    panel.querySelector("button").onclick = async () => {
-      const start = panel.querySelector("button");
-      const resultBox = panel.querySelector(".error");
-      start.disabled = true;
-      start.textContent = "Processing starred repositories…";
-      const result = await chrome.runtime.sendMessage({ type: "mirror-starred", profile: starredProfile });
-      if (result.error) {
-        resultBox.textContent = result.error;
-        start.disabled = false;
-        start.textContent = "Start mirroring";
-      } else {
-        resultBox.style.color = "#1a7f37";
-        resultBox.textContent = `Done: ${result.created} created, ${result.skipped} already mirrored/skipped, ${result.failed.length} failed.${result.failed.length ? `\n${result.failed.join("\n")}` : ""}`;
-        start.textContent = "Completed";
-      }
-    };
+    chrome.runtime.sendMessage({ type: "get-starred-progress" }).then((saved) => { progress = saved; render(); });
   };
 }
 
