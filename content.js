@@ -54,8 +54,8 @@ if (match && !document.getElementById("gitea-mirror-helper")) {
     const result = await request({ type: "status", repo });
     setState(result.error ? { state: "setup", error: result.error } : result);
   }
-  function settingsForm(error = "") {
-    panel.innerHTML = `<h3>Connect Gitea</h3><p>Tokens are stored only in this browser profile.</p><form><label>Gitea URL</label><input name="giteaUrl" placeholder="https://git.example.ir" required><label>Gitea username / owner</label><input name="giteaOwner" placeholder="your-username" required><label>Gitea access token</label><input name="giteaToken" type="password" required><label>GitHub token (for private repositories)</label><input name="githubToken" type="password"><button>Save</button></form><div class="error">${escapeHtml(error)}</div>`;
+  function settingsForm(error = "", prefill = {}) {
+    panel.innerHTML = `<h3>Connect Gitea</h3><p>Tokens are stored only in this browser profile.</p><form><label>Gitea URL</label><input name="giteaUrl" placeholder="https://git.example.ir" required value="${escapeHtml(prefill.giteaUrl || "")}"><label>Gitea username / owner</label><input name="giteaOwner" placeholder="your-username" required value="${escapeHtml(prefill.giteaOwner || "")}"><label>Gitea access token</label><input name="giteaToken" type="password" required value="${escapeHtml(prefill.giteaToken || "")}"><label>GitHub token (for private repositories)</label><input name="githubToken" type="password" value="${escapeHtml(prefill.githubToken || "")}"><button>Save</button></form><div class="error">${escapeHtml(error)}</div>`;
     panel.querySelector("button").onclick = async (event) => {
       event.preventDefault();
       const config = Object.fromEntries(new FormData(panel.querySelector("form")).entries());
@@ -73,7 +73,7 @@ if (match && !document.getElementById("gitea-mirror-helper")) {
     }
     const mirror = current.mirrored;
     const canSync = current?.state === "stale";
-    panel.innerHTML = `<h3>${button.title}</h3><p>${mirror?.mirror_updated ? `Last Gitea update: ${new Date(mirror.mirror_updated).toLocaleString()}` : ""}</p><div class="gitea-mirror-actions">${current.config ? `<a href="${current.config.giteaUrl}/${current.config.giteaOwner}/${repo.name}" target="_blank">Open Gitea mirror</a>` : ""}${canSync ? `<button type="button" class="sync">Update mirror now</button>` : ""}</div><div class="error"></div>`;
+    panel.innerHTML = `<h3>${button.title}</h3><p>${mirror?.mirror_updated ? `Last Gitea update: ${new Date(mirror.mirror_updated).toLocaleString()}` : ""}</p><div class="gitea-mirror-actions">${current.config ? `<a href="${current.config.giteaUrl}/${current.config.giteaOwner}/${repo.name}" target="_blank">Open Gitea mirror</a>` : ""}${canSync ? `<button type="button" class="sync">Update mirror now</button>` : ""}<button type="button" class="edit-settings">Edit settings</button></div><div class="error"></div>`;
     if (canSync) panel.querySelector(".sync").onclick = async () => {
       const syncButton = panel.querySelector(".sync");
       const error = panel.querySelector(".error");
@@ -90,6 +90,7 @@ if (match && !document.getElementById("gitea-mirror-helper")) {
         setTimeout(refresh, 3000);
       }
     };
+    panel.querySelector(".edit-settings").onclick = () => settingsForm("", current.config);
   };
   refresh();
 }
