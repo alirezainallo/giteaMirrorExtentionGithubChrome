@@ -10,7 +10,7 @@ This extension adds a floating button to the bottom-right of GitHub repository p
 2. Open `chrome://extensions` in Chrome.
 3. Enable **Developer mode** in the top-right corner.
 4. Click **Load unpacked** and select the folder containing `manifest.json`.
-5. Open or refresh a repository page on `github.com`. The `⇄` button will appear in the bottom-right corner.
+5. Open or refresh a repository page on `github.com`. The circular `↻` button will appear in the bottom-right corner.
 
 After changing extension files, click **Reload** for the extension on `chrome://extensions`.
 
@@ -47,7 +47,7 @@ Go to **Settings** → **Developer settings** → **Personal access tokens** →
 
 ## 4. First-time setup
 
-Open a GitHub repository, click the floating `⇄` button, and enter the following values:
+Open a GitHub repository, click the floating `↻` button, and enter the following values:
 
 | Field | Example | Description |
 | --- | --- | --- |
@@ -57,6 +57,10 @@ Open a GitHub repository, click the floating `⇄` button, and enter the followi
 | **GitHub token** | `github_pat_…` | The token created in step 3; optional for public repositories |
 
 When saving, Chrome asks for permission to access your Gitea domain; approve it. When the button is red, click **Create mirror**. Gitea performs the clone and future updates, so the Gitea server itself must be able to reach GitHub and have repository migration enabled.
+
+## Profiles and settings
+
+On any GitHub page that is neither a repository page nor a Stars page, use the floating **gear** button to manage profiles. A profile contains its own Gitea URL, Gitea owner, Gitea token, GitHub username, and GitHub token. The GitHub username and the Gitea username/organization are intentionally separate, so they do not need to match. Select an existing profile to make it active, choose **New profile** to add another Gitea destination, and use **Export profile** to download its complete JSON configuration. Use **Import profile** to add a previously exported JSON profile as a new active profile. Password inputs remain masked in the UI; exports intentionally include the tokens and must be stored securely.
 
 ## Status colors
 
@@ -71,7 +75,7 @@ When the status is orange, open the button panel and select **Update mirror now*
 
 ## Mirror starred repositories
 
-On a GitHub profile's **Stars** tab (for example, `https://github.com/your-name?tab=stars`), the extension shows a **Mirror starred repositories** button. Confirming the action lists your starred repositories and handles them one at a time. Any repository that already exists in the configured Gitea owner is skipped; only missing mirrors are created. The live dashboard shows current repository, batch completion percentage, mirror coverage percentage, status counts, and an itemized list of existing, queued, and failed mirrors. A GitHub token is recommended for this feature and required when the starred list includes private repositories.
+On a GitHub profile's **Stars** tab (for example, `https://github.com/your-name?tab=stars`), the extension shows a **Mirror starred repositories** button. Confirming the action lists your starred repositories and handles them one at a time. Any repository that already exists in the configured Gitea owner is skipped; only missing mirrors are created. The live dashboard shows the current repository, batch completion percentage, mirror coverage percentage, and every queue item. You can **Skip** an individual not-yet-started repository, **Skip remaining** repositories, or **Cancel current mirror**. Cancelling aborts the extension request and removes the destination Gitea repository if it was created, so a large or stalled migration does not block the rest of the batch. A GitHub token is recommended for this feature and required when the starred list includes private repositories.
 
 ## Security and troubleshooting
 
