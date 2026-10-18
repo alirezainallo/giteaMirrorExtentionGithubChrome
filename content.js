@@ -21,8 +21,19 @@ if (batchProfile && batchKind && !document.getElementById("gitea-batch-helper"))
     panel.querySelector(".reload").onclick=load;
     panel.querySelector(".start").onclick=async()=>{try{panel.querySelector(".start").disabled=true;await send({type:"start-batch",profile:batchProfile,kind:batchKind,selected:items.filter(r=>selected.has(r.owner+"/"+r.name))});progress=await send({type:"get-batch-progress"});renderProgress();}catch(e){error(e);}};
   }
+  async function showReconnect(){
+    try {
+      const data=await send({type:"get-batch-profiles"});
+      const choices=data.profiles||[];
+      const issue=progress?.error||"Saved batch needs a Gitea profile.";
+      panel.innerHTML=`<h3>Mirror queue paused</h3><p class="error">${esc(issue)}</p><p>Your saved queue is intact. Select the original Gitea destination to safely resume. No repositories will be deleted.</p><label for="gm-reconnect-profile">Gitea profile</label><select id="gm-reconnect-profile">${choices.map(p=>`<option value="${esc(p.id)}" ${p.id===data.activeProfileId?"selected":""}>${esc(p.name)} — ${esc(p.giteaUrl)}/${esc(p.giteaOwner)}</option>`).join("")}</select><div class="batch-toolbar"><button class="reconnect" ${choices.length?"":"disabled"}>Resume saved queue</button><button class="new-batch">New selection instead</button></div><p class="batch-note">Check the destination carefully. Older queues did not record their destination address.</p><div class="error" role="alert"></div>`;
+      panel.querySelector(".reconnect").onclick=async()=>{try{const btn=panel.querySelector(".reconnect");btn.disabled=true;await send({type:"reconnect-batch",profileId:panel.querySelector("#gm-reconnect-profile").value});progress=await send({type:"get-batch-progress"});renderProgress();}catch(e){error(e);panel.querySelector(".reconnect").disabled=false;}};
+      panel.querySelector(".new-batch").onclick=load;
+    }catch(e){waiting("Cannot load saved queue profiles.");error(e);}
+  }
   function renderProgress(){
     if(!progress)return preview();
+    if(progress.error && !progress.running){void showReconnect();return;}
     const pct=progress.total?Math.round(progress.processed*100/progress.total):100;
     panel.innerHTML=`<h3>Mirror queue — ${progress.running?"Running":"Completed"}</h3><p>${progress.processed}/${progress.total} processed (${pct}%). ${progress.queued} awaiting verification, ${progress.mirrored} registered mirrors, ${progress.existing} existing, ${progress.failed} failed.</p><div class="mirror-progress"><i style="width:${pct}%"></i></div><p>Current: ${esc(progress.current||"None")}</p><p class="batch-note">A registered mirror may still be cloning on Gitea. Requests have a 60-second timeout and the queue resumes after Chrome suspends it.</p><div class="batch-toolbar">${progress.running?'<button class="cancel-current">Cancel current request</button><button class="skip-remaining">Skip remaining</button>':'<button class="new-batch">New selection</button>'}</div><ul class="batch-list">${progress.items.map(r=>`<li><span class="mirror-state ${esc(r.status)}">${esc(r.status)}</span> ${esc(r.owner)}/${esc(r.name)} ${r.status==="pending"?`<button class="skip" data-key="${esc(r.owner+"/"+r.name)}">Skip</button>`:""}${r.error?`<small>${esc(r.error)}</small>`:""}${r.note?`<small>${esc(r.note)}</small>`:""}</li>`).join("")}</ul><div class="error"></div>`;
     panel.querySelector(".new-batch")?.addEventListener("click",load);

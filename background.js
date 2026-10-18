@@ -152,18 +152,50 @@ function scheduleVerify() {
 async function startBatch(profile, kind, selected) {
   const previous = (await chrome.storage.local.get(BATCH_PROGRESS_KEY))[BATCH_PROGRESS_KEY];
   if (previous?.running) throw new Error("Another batch is already running. Resume or skip that batch first.");
-  const config = await settings();
+  const store = await profileStore();
+  const config = store.profiles.find(p => p.id === store.activeProfileId) || store.profiles[0];
   if (!config) throw new Error("Configure Gitea first.");
   if (!Array.isArray(selected) || !selected.length) throw new Error("Select at least one repository.");
   const unique = [...new Map(selected.map(repo => [repositoryKey(repo), { owner: repo.owner, name: repo.name }])).values()];
   if (unique.some(repo => !/^[a-zA-Z0-9-]+$/.test(repo.owner) || !/^[a-zA-Z0-9_.-]+$/.test(repo.name))) throw new Error("Invalid repository name.");
   const progress = { profile, kind, running: true, startedAt: Date.now(), completedAt: null,
-    profileId: (await profileStore()).activeProfileId, current: null, total: unique.length,
+    profileId: config.id, destination: { giteaUrl: config.giteaUrl, giteaOwner: config.giteaOwner }, current: null, total: unique.length,
     items: unique.map(repo => ({ ...repo, status: "pending" })) };
   recalcBatch(progress);
   await saveBatch(progress);
   scheduleBatch();
   return { ok: true };
+}
+// Existing queues remain in storage. Never silently redirect a queue to another Gitea server.
+async function reconnectBatch(profileId) {
+  if (batchBusy) throw new Error("Wait until the current request finishes before reconnecting.");
+  const progress = (await chrome.storage.local.get(BATCH_PROGRESS_KEY))[BATCH_PROGRESS_KEY];
+  if (!progress?.items?.length) throw new Error("There is no saved batch to reconnect.");
+  if (progress.running) throw new Error("The batch is currently running.");
+  const store = await profileStore();
+  const profile = store.profiles.find(p => p.id === profileId);
+  if (!profile) throw new Error("Select an existing Gitea profile.");
+  if (progress.destination &&
+      (profile.giteaUrl.replace(/\/+$/, "") !== progress.destination.giteaUrl.replace(/\/+$/, "") ||
+       profile.giteaOwner !== progress.destination.giteaOwner)) {
+    throw new Error("This profile points to a different Gitea destination than the saved batch. Start a new batch instead.");
+  }
+  // Old batches had no destination fingerprint: explicit user consent is required.
+  progress.profileId = profile.id;
+  progress.destination = { giteaUrl: profile.giteaUrl, giteaOwner: profile.giteaOwner };
+  progress.error = null;
+  progress.running = true;
+  progress.completedAt = null;
+  progress.current = null;
+  recalcBatch(progress);
+  await saveBatch(progress);
+  scheduleBatch();
+  return { ok: true };
+}
+async function getBatchProfiles() {
+  const store = await profileStore();
+  return { activeProfileId: store.activeProfileId,
+    profiles: store.profiles.map(p => ({ id:p.id, name:p.name, giteaUrl:p.giteaUrl, giteaOwner:p.giteaOwner })) };
 }
 async function advanceBatch() {
   if (batchBusy) return;
@@ -174,7 +206,7 @@ async function advanceBatch() {
     const store = await profileStore();
     const config = store.profiles.find(p => p.id === progress.profileId);
     if (!config) {
-      progress.running = false; progress.error = "The batch's Gitea profile was removed.";
+      progress.running = false; progress.error = "The batch's saved Gitea profile cannot be found. Reconnect it to a profile to resume.";
       await saveBatch(progress); return;
     }
     // The worker may have been terminated while an API call was underway.
@@ -501,6 +533,8 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       return progress;
     }
     if (message.type === "control-batch") return await controlBatch(message.action,message.key);
+    if (message.type === "get-batch-profiles") return await getBatchProfiles();
+    if (message.type === "reconnect-batch") return await reconnectBatch(message.profileId);
     if (message.type === "get-settings") return { config: await settings() };
     if (message.type === "save-settings") {
       const config = message.config;
