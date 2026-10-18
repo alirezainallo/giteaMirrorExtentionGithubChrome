@@ -11,7 +11,8 @@ if (batchProfile && batchKind && !document.getElementById("gitea-batch-helper"))
   const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
   const send=async m=>{const r=await chrome.runtime.sendMessage(m);if(r?.error)throw new Error(r.error);return r;};
   let items=[], selected=new Set(), progress=null, busy=false;
-  const error=e=>{const node=panel.querySelector(".error");if(node)node.textContent=e.message||String(e);};
+  const error=e=>{let node=panel.querySelector(".error");if(!node){node=document.createElement("div");node.className="error";panel.append(node);}node.textContent=e?.message||String(e);};
+  const waiting=message=>{panel.innerHTML=`<p role="status">${esc(message)}</p><div class="error" role="alert"></div>`;};
   function preview(){
     panel.innerHTML=`<h3>${batchKind==="stars"?"Starred":"My"} repositories</h3><p>Select repositories, then click Start. No mirrors are created before confirmation.</p><div class="batch-toolbar"><button class="all">Select all</button><button class="none">Select none</button><span>${selected.size} / ${items.length} selected</span></div><ul class="batch-list">${items.map((r,i)=>`<li><label><input type="checkbox" data-index="${i}" ${selected.has(r.owner+"/"+r.name)?"checked":""}><span><b>${esc(r.owner)}/${esc(r.name)}</b><small>${esc(r.description)}</small></span></label></li>`).join("")||"<li>No repositories found.</li>"}</ul><div class="batch-toolbar"><button class="start" ${selected.size?"":"disabled"}>Start mirroring (${selected.size})</button><button class="reload">Refresh list</button></div><div class="error"></div>`;
     panel.querySelectorAll('input[type="checkbox"]').forEach(el=>el.onchange=()=>{const r=items[Number(el.dataset.index)],key=r.owner+"/"+r.name;el.checked?selected.add(key):selected.delete(key);preview();});
@@ -23,13 +24,31 @@ if (batchProfile && batchKind && !document.getElementById("gitea-batch-helper"))
   function renderProgress(){
     if(!progress)return preview();
     const pct=progress.total?Math.round(progress.processed*100/progress.total):100;
-    panel.innerHTML=`<h3>Mirror queue — ${progress.running?"Running":"Completed"}</h3><p>${progress.processed}/${progress.total} processed (${pct}%). ${progress.queued} queued, ${progress.mirrored} mirrored, ${progress.existing} existing, ${progress.failed} failed.</p><div class="mirror-progress"><i style="width:${pct}%"></i></div><p>Current: ${esc(progress.current||"None")}</p><div class="batch-toolbar">${progress.running?'<button class="cancel-current">Cancel current request</button><button class="skip-remaining">Skip remaining</button>':'<button class="new-batch">New selection</button>'}</div><ul class="batch-list">${progress.items.map(r=>`<li><span class="mirror-state ${esc(r.status)}">${esc(r.status)}</span> ${esc(r.owner)}/${esc(r.name)} ${r.status==="pending"?`<button class="skip" data-key="${esc(r.owner+"/"+r.name)}">Skip</button>`:""}${r.error?`<small>${esc(r.error)}</small>`:""}</li>`).join("")}</ul><div class="error"></div>`;
+    panel.innerHTML=`<h3>Mirror queue — ${progress.running?"Running":"Completed"}</h3><p>${progress.processed}/${progress.total} processed (${pct}%). ${progress.queued} awaiting verification, ${progress.mirrored} registered mirrors, ${progress.existing} existing, ${progress.failed} failed.</p><div class="mirror-progress"><i style="width:${pct}%"></i></div><p>Current: ${esc(progress.current||"None")}</p><p class="batch-note">A registered mirror may still be cloning on Gitea. Requests have a 60-second timeout and the queue resumes after Chrome suspends it.</p><div class="batch-toolbar">${progress.running?'<button class="cancel-current">Cancel current request</button><button class="skip-remaining">Skip remaining</button>':'<button class="new-batch">New selection</button>'}</div><ul class="batch-list">${progress.items.map(r=>`<li><span class="mirror-state ${esc(r.status)}">${esc(r.status)}</span> ${esc(r.owner)}/${esc(r.name)} ${r.status==="pending"?`<button class="skip" data-key="${esc(r.owner+"/"+r.name)}">Skip</button>`:""}${r.error?`<small>${esc(r.error)}</small>`:""}${r.note?`<small>${esc(r.note)}</small>`:""}</li>`).join("")}</ul><div class="error"></div>`;
     panel.querySelector(".new-batch")?.addEventListener("click",load);
     for(const action of ["cancel-current","skip-remaining"]){panel.querySelector("."+action)?.addEventListener("click",async()=>{try{await send({type:"control-batch",action});}catch(e){error(e);}});}
     panel.querySelectorAll(".skip").forEach(el=>el.onclick=async()=>{try{await send({type:"control-batch",action:"skip",key:el.dataset.key});}catch(e){error(e);}});
   }
   async function load(){if(busy)return;busy=true;panel.innerHTML="<p>Loading GitHub repositories…</p>";try{const r=await send({type:"list-batch-repos",kind:batchKind,profile:batchProfile});items=r.items;selected=new Set(items.map(r=>r.owner+"/"+r.name));progress=null;preview();}catch(e){panel.innerHTML='<div class="error"></div><button class="retry">Retry</button>';error(e);panel.querySelector(".retry").onclick=load;}finally{busy=false;}}
-  button.onclick=async()=>{panel.hidden=!panel.hidden;if(panel.hidden)return;try{const saved=await send({type:"get-batch-progress"});if(saved?.profile===batchProfile&&saved.kind===batchKind){progress=saved;renderProgress();}else await load();}catch(e){error(e);}};
+  async function openBatch(){
+    waiting("Loading mirror queue…");
+    try {
+      // A rejected message must be visible instead of leaving an empty popup.
+      const saved=await Promise.race([
+        send({type:"get-batch-progress"}),
+        new Promise((_,reject)=>setTimeout(()=>reject(new Error("Background worker did not respond within 10 seconds. Reload the extension and retry.")),10000))
+      ]);
+      if(panel.hidden)return;
+      if(saved?.profile===batchProfile&&saved.kind===batchKind){progress=saved;renderProgress();}
+      else await load();
+    }catch(e){
+      if(panel.hidden)return;
+      waiting("Cannot load mirror queue.");error(e);
+      const retry=document.createElement("button");retry.type="button";retry.textContent="Retry";
+      retry.addEventListener("click",openBatch);panel.append(retry);
+    }
+  }
+  button.onclick=()=>{panel.hidden=!panel.hidden;if(!panel.hidden)void openBatch();};
   chrome.storage.onChanged.addListener((changes,area)=>{if(area==="local"&&changes.giteaBatchMirrorProgress){const p=changes.giteaBatchMirrorProgress.newValue;if(p?.profile===batchProfile&&p.kind===batchKind&&progress){progress=p;if(!panel.hidden)renderProgress();}}});
 }
 

@@ -116,50 +116,185 @@ async function listGithubRepos(kind, profile) {
   throw new Error("Repository list exceeded 10,000 items.");
 }
 
+// Durable MV3 batch runner: one repository per alarm, with recovery after worker suspension.
+const BATCH_ALARM = "gitea-batch-next";
+const VERIFY_ALARM = "gitea-batch-verify";
+const REQUEST_TIMEOUT_MS = 60000;
 let activeBatch = null;
+let batchBusy = false;
+
+async function saveBatch(progress) {
+  progress.updatedAt = Date.now();
+  await chrome.storage.local.set({ [BATCH_PROGRESS_KEY]: progress });
+}
+function recalcBatch(progress) {
+  for (const key of ["processed", "mirrored", "queued", "existing", "failed", "skipped", "cancelled"]) progress[key] = 0;
+  for (const item of progress.items) {
+    if (item.status !== "pending" && item.status !== "checking" && item.status !== "creating") progress.processed++;
+    if (["mirrored", "queued", "existing", "failed", "skipped", "cancelled"].includes(item.status)) progress[item.status]++;
+  }
+}
+function batchDestination(config, repo) {
+  return `/repos/${encodeURIComponent(config.giteaOwner)}/${encodeURIComponent(repo.name)}`;
+}
+async function lookupDestination(config, repo, signal) {
+  const timeout = AbortSignal.timeout(15000);
+  const combined = signal ? AbortSignal.any([signal, timeout]) : timeout;
+  try { return await giteaFetch(config, batchDestination(config, repo), { signal: combined }); }
+  catch (error) { if (error.message.startsWith("Gitea (404):")) return null; throw error; }
+}
+function scheduleBatch(delayMinutes = 0.02) {
+  chrome.alarms.create(BATCH_ALARM, { delayInMinutes: delayMinutes });
+}
+function scheduleVerify() {
+  chrome.alarms.create(VERIFY_ALARM, { delayInMinutes: 1 });
+}
 async function startBatch(profile, kind, selected) {
-  if (activeBatch?.progress.running) return { error: "Another batch is already running." };
+  const previous = (await chrome.storage.local.get(BATCH_PROGRESS_KEY))[BATCH_PROGRESS_KEY];
+  if (previous?.running) throw new Error("Another batch is already running. Resume or skip that batch first.");
   const config = await settings();
   if (!config) throw new Error("Configure Gitea first.");
   if (!Array.isArray(selected) || !selected.length) throw new Error("Select at least one repository.");
-  const unique = [...new Map(selected.map(repo => [repositoryKey(repo), {owner:repo.owner,name:repo.name}])).values()];
+  const unique = [...new Map(selected.map(repo => [repositoryKey(repo), { owner: repo.owner, name: repo.name }])).values()];
   if (unique.some(repo => !/^[a-zA-Z0-9-]+$/.test(repo.owner) || !/^[a-zA-Z0-9_.-]+$/.test(repo.name))) throw new Error("Invalid repository name.");
-  const progress = { profile, kind, running:true, total:unique.length, processed:0, mirrored:0, queued:0, existing:0, failed:0, skipped:0, cancelled:0, current:null, items:unique.map(repo=>({...repo,status:"pending"})) };
-  activeBatch = { progress, controller:null };
-  await chrome.storage.local.set({[BATCH_PROGRESS_KEY]:progress});
-  // Respond immediately. Each API request is sequential; Gitea cloning itself remains asynchronous.
-  void (async()=>{
+  const progress = { profile, kind, running: true, startedAt: Date.now(), completedAt: null,
+    profileId: (await profileStore()).activeProfileId, current: null, total: unique.length,
+    items: unique.map(repo => ({ ...repo, status: "pending" })) };
+  recalcBatch(progress);
+  await saveBatch(progress);
+  scheduleBatch();
+  return { ok: true };
+}
+async function advanceBatch() {
+  if (batchBusy) return;
+  batchBusy = true;
+  try {
+    const progress = (await chrome.storage.local.get(BATCH_PROGRESS_KEY))[BATCH_PROGRESS_KEY];
+    if (!progress?.running) return;
+    const store = await profileStore();
+    const config = store.profiles.find(p => p.id === progress.profileId);
+    if (!config) {
+      progress.running = false; progress.error = "The batch's Gitea profile was removed.";
+      await saveBatch(progress); return;
+    }
+    // The worker may have been terminated while an API call was underway.
+    // Re-check Gitea before reissuing a migration request.
+    const item = progress.items.find(i => ["checking", "creating", "pending"].includes(i.status));
+    if (!item) {
+      progress.running = false; progress.current = null; progress.completedAt = Date.now();
+      recalcBatch(progress); await saveBatch(progress); scheduleVerify(); return;
+    }
+    const controller = new AbortController();
+    activeBatch = { controller, key: repositoryKey(item) };
+    progress.current = activeBatch.key;
+    item.status = "checking";
+    item.attempts = (item.attempts || 0) + 1;
+    await saveBatch(progress);
     try {
-      for (const item of progress.items) {
-        if (item.status === "skipped") {progress.processed++;continue;}
-        progress.current = repositoryKey(item);
-        item.status = "checking";
-        const controller = new AbortController(); activeBatch.controller = controller;
-        await chrome.storage.local.set({[BATCH_PROGRESS_KEY]:progress});
-        try {
-          let existing;
-          try { existing = await giteaFetch(config, `/repos/${encodeURIComponent(config.giteaOwner)}/${encodeURIComponent(item.name)}`, {signal:controller.signal}); }
-          catch(e) {if (!e.message.includes("Gitea (404)")) throw e;}
-          if (existing) {item.status = existing.mirror ? "mirrored" : "existing";progress[existing.mirror ? "mirrored" : "existing"]++;}
-          else {item.status="creating";await chrome.storage.local.set({[BATCH_PROGRESS_KEY]:progress});await createMirror(item,controller.signal);item.status="queued";progress.queued++;}
-        } catch(e) {
-          if (item.cancelRequested) {item.status="cancelled";progress.cancelled++; /* Do not delete repositories on ambiguous cancellation. */}
-          else {item.status="failed";item.error=e.message;progress.failed++;}
-        } finally {progress.processed++;progress.current=null;activeBatch.controller=null;await chrome.storage.local.set({[BATCH_PROGRESS_KEY]:progress});}
+      const existing = await lookupDestination(config, item, controller.signal);
+      if (existing) {
+        item.status = existing.mirror ? "mirrored" : "existing";
+        if (existing.mirror) item.note = "Mirror exists in Gitea (clone completion not independently verified).";
+      } else {
+        item.status = "creating";
+        await saveBatch(progress);
+        // createMirror may wait until Gitea finishes initial migration.
+        // It is safe to retry after timeout only after checking destination again.
+        await createMirrorWithTimeout(item, config, controller);
+        item.status = "queued";
       }
-    } finally {progress.running=false;progress.current=null;await chrome.storage.local.set({[BATCH_PROGRESS_KEY]:progress});activeBatch=null;}
-  })().catch(console.error);
-  return {ok:true};
+    } catch (error) {
+      try {
+        // If Gitea completed the migration despite a timeout/abort, don't duplicate it.
+        const existing = await lookupDestination(config, item);
+        if (existing) {
+          item.status = existing.mirror ? "mirrored" : "existing";
+          item.note = "Found on Gitea after interrupted request; check initial sync in Gitea.";
+        } else if (item.cancelRequested) { item.status = "cancelled"; }
+        else { item.status = "failed"; item.error = error.message; }
+      } catch (checkError) {
+        item.status = item.cancelRequested ? "cancelled" : "failed";
+        item.error = `${error.message}. Destination verification failed: ${checkError.message}`;
+      }
+    } finally {
+      // Merge user Skip operations made while this network request was in progress.
+      const latest = (await chrome.storage.local.get(BATCH_PROGRESS_KEY))[BATCH_PROGRESS_KEY];
+      if (latest?.startedAt === progress.startedAt) {
+        for (const pending of progress.items) {
+          const newer = latest.items.find(i => repositoryKey(i) === repositoryKey(pending));
+          if (newer?.status === "skipped" && pending.status === "pending") pending.status = "skipped";
+        }
+      }
+      activeBatch = null;
+      progress.current = null;
+      recalcBatch(progress);
+      await saveBatch(progress);
+      scheduleBatch();
+    }
+  } finally { batchBusy = false; }
 }
-async function controlBatch(action,key) {
-  const run=activeBatch;
-  if (!run?.progress.running) throw new Error("No active batch.");
-  if (action === "skip") {const item=run.progress.items.find(i=>repositoryKey(i)===key && i.status==="pending");if(!item)throw new Error("Item is not pending.");item.status="skipped";run.progress.skipped++;}
-  else if(action === "skip-remaining") {for(const item of run.progress.items)if(item.status==="pending"){item.status="skipped";run.progress.skipped++;}}
-  else if(action === "cancel-current") {const item=run.progress.items.find(i=>["checking","creating"].includes(i.status));if(!item)throw new Error("No active request.");item.cancelRequested=true;run.controller?.abort();}
-  else throw new Error("Unknown action.");
-  await chrome.storage.local.set({[BATCH_PROGRESS_KEY]:run.progress});return {ok:true};
+async function createMirrorWithTimeout(item, config, controller) {
+  const timer = setTimeout(() => controller.abort(new Error("Gitea migration timed out after 60 seconds")), REQUEST_TIMEOUT_MS);
+  try {
+    // Using the exact batch profile prevents profile switching from redirecting mirrors.
+    const github = await githubRepo(item, config.githubToken, controller.signal);
+    await giteaFetch(config, "/repos/migrate", {
+      method: "POST", signal: controller.signal,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo_name: item.name, repo_owner: config.giteaOwner,
+        name: item.name, private: github.private, mirror: true,
+        clone_addr: sourceCloneUrl(item, config), description: github.description || "",
+        auth_token: config.githubToken || undefined,
+        auth_username: config.githubToken ? "x-access-token" : undefined })
+    });
+  } catch (error) {
+    if (controller.signal.aborted && !item.cancelRequested) throw new Error("Migration request timed out or was interrupted");
+    throw error;
+  } finally { clearTimeout(timer); }
 }
+async function controlBatch(action, key) {
+  const progress = (await chrome.storage.local.get(BATCH_PROGRESS_KEY))[BATCH_PROGRESS_KEY];
+  if (!progress?.running) throw new Error("No active batch.");
+  if (action === "skip") {
+    const item = progress.items.find(i => repositoryKey(i) === key && i.status === "pending");
+    if (!item) throw new Error("Item is not pending.");
+    item.status = "skipped";
+  } else if (action === "skip-remaining") {
+    for (const item of progress.items) if (item.status === "pending") item.status = "skipped";
+  } else if (action === "cancel-current") {
+    const item = progress.items.find(i => ["checking", "creating"].includes(i.status));
+    if (!item) throw new Error("No active request.");
+    item.cancelRequested = true;
+    if (activeBatch?.key === repositoryKey(item)) activeBatch.controller.abort();
+    else { item.status = "pending"; item.cancelRequested = false; } // stopped worker; safely recheck Gitea
+  } else throw new Error("Unknown action.");
+  recalcBatch(progress); await saveBatch(progress);
+  scheduleBatch();
+  return { ok: true };
+}
+async function verifyQueued() {
+  const progress = (await chrome.storage.local.get(BATCH_PROGRESS_KEY))[BATCH_PROGRESS_KEY];
+  if (!progress?.items?.some(i => i.status === "queued")) return;
+  const store = await profileStore();
+  const config = store.profiles.find(p => p.id === progress.profileId);
+  if (!config) return;
+  // Verifies repository creation, NOT completion of its first Git pull.
+  for (const item of progress.items.filter(i => i.status === "queued").slice(0, 10)) {
+    try {
+      const found = await lookupDestination(config, item);
+      if (found?.mirror) { item.status = "mirrored"; item.note = "Mirror registered in Gitea; initial clone may still be processing."; }
+      else if (found) { item.status = "existing"; item.error = "Repository exists but is not a pull mirror."; }
+    } catch (error) { item.note = `Verification postponed: ${error.message}`; }
+  }
+  recalcBatch(progress); await saveBatch(progress);
+  if (progress.items.some(i => i.status === "queued")) scheduleVerify();
+}
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === BATCH_ALARM) void advanceBatch().catch(console.error);
+  if (alarm.name === VERIFY_ALARM) void verifyQueued().catch(console.error);
+});
+chrome.runtime.onStartup.addListener(() => { scheduleBatch(); scheduleVerify(); });
+chrome.runtime.onInstalled.addListener(() => { scheduleBatch(); scheduleVerify(); });
 
 function sourceCloneUrl(repo, config) {
   // Gitea receives the GitHub token separately; never place it in a clone URL.
@@ -359,7 +494,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
     if (message.type === "list-batch-repos") return {items:await listGithubRepos(message.kind,message.profile)};
     if (message.type === "start-batch") return await startBatch(message.profile,message.kind,message.selected);
-    if (message.type === "get-batch-progress") return (await chrome.storage.local.get(BATCH_PROGRESS_KEY))[BATCH_PROGRESS_KEY] || null;
+    if (message.type === "get-batch-progress") {
+      const progress = (await chrome.storage.local.get(BATCH_PROGRESS_KEY))[BATCH_PROGRESS_KEY] || null;
+      // Do not keep resetting the alarm whenever a dashboard opens.
+      if (progress?.running && !(await chrome.alarms.get(BATCH_ALARM))) scheduleBatch();
+      return progress;
+    }
     if (message.type === "control-batch") return await controlBatch(message.action,message.key);
     if (message.type === "get-settings") return { config: await settings() };
     if (message.type === "save-settings") {

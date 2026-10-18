@@ -89,3 +89,12 @@ On a GitHub profile's **Stars** tab (for example, `https://github.com/your-name?
 Open your GitHub profile Repositories tab (`/username?tab=repositories`) or Stars tab (`/username?tab=stars`). Click **Mirror repositories**, review the fetched list, select/deselect entries, and click **Start mirroring**. Selected repositories are processed sequentially; existing Gitea repositories are never overwritten. The queue displays live progress and supports skipping pending entries and aborting the current HTTP request. Aborting an in-flight migration does not guarantee Gitea cancels server-side work; check the destination manually. Gitea may continue cloning queued repositories concurrently after each API call returns.
 
 Note: the batch currently runs in a Manifest V3 service worker and may be interrupted if Chrome terminates the worker. A durable alarm-based queue is recommended for very large batches. For private repositories, ensure your token has access to the relevant repositories.
+
+
+## Version 1.1.1 — stalled batch fix
+
+Batch processing is now driven by Chrome alarms instead of a detached, long-running MV3 service-worker loop. The current item and queue are stored in `chrome.storage.local` so the next alarm can resume after worker suspension. Migration requests are bounded to 60 seconds; on interruption, the extension checks Gitea first to avoid issuing a duplicate migration request. Existing destination repositories are never deleted by cancellation.
+
+`Queued` means that Gitea accepted the migration request; it does **not** prove the full clone is finished. `Mirrored` means Gitea reports a pull-mirror repository, not necessarily that the initial clone and sync are complete. Consult the mirror's status on Gitea for completion. A remote server that continues running migration after the HTTP request was aborted may still finish the clone.
+
+**Updating during a running batch:** Reload the extension on `chrome://extensions` and refresh GitHub. The stored queue is retained. On the first alarm/get-progress request the runner checks Gitea and resumes.
