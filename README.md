@@ -98,3 +98,7 @@ Batch processing is now driven by Chrome alarms instead of a detached, long-runn
 `Queued` means that Gitea accepted the migration request; it does **not** prove the full clone is finished. `Mirrored` means Gitea reports a pull-mirror repository, not necessarily that the initial clone and sync are complete. Consult the mirror's status on Gitea for completion. A remote server that continues running migration after the HTTP request was aborted may still finish the clone.
 
 **Updating during a running batch:** Reload the extension on `chrome://extensions` and refresh GitHub. The stored queue is retained. On the first alarm/get-progress request the runner checks Gitea and resumes.
+
+## 1.1.4 — Personal repository pagination and private repositories
+
+The Repositories selection now uses `GET /user/repos?affiliation=owner&per_page=100&page=N` when a GitHub token belongs to the visited profile. The public `/users/{username}/repos` endpoint only returns public repositories, even when an authorization header is attached. All API pages are fetched until the final short page, with duplicates removed. Visiting someone else’s profile intentionally stays on the public endpoint. A token must have access to each private repository (fine-grained token: Repository access = All repositories, or select all desired repositories; Contents: Read). If a token is absent, only public repositories can be listed. Refresh list to fetch newly accessible repositories.

@@ -104,16 +104,64 @@ async function listGithubRepos(kind, profile) {
   const token = config?.githubToken;
   const username = config?.githubUsername || profile;
   if (!username) throw new Error("Configure a GitHub username first.");
-  const endpoint = kind === "stars" ? (token ? "https://api.github.com/user/starred" : `https://api.github.com/users/${encodeURIComponent(username)}/starred`) : `https://api.github.com/users/${encodeURIComponent(profile)}/repos`;
-  const repositories = [];
-  for (let page = 1; page <= 100; page++) {
-    const response = await fetch(`${endpoint}?per_page=100&page=${page}&sort=updated`, { headers: { Accept: "application/vnd.github+json", ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
-    if (!response.ok) throw new Error(`GitHub (${response.status}): cannot list repositories`);
-    const batch = await response.json();
-    repositories.push(...batch.map(item => ({ owner: item.owner.login, name: item.name, private: item.private, description: item.description || "" })));
-    if (batch.length < 100) return repositories;
+
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28",
+    ...(token ? { Authorization: `Bearer ${token}` } : {})
+  };
+  let endpoint;
+  if (kind === "stars") {
+    endpoint = token ? "https://api.github.com/user/starred" :
+      `https://api.github.com/users/${encodeURIComponent(username)}/starred`;
+  } else if (kind === "repos") {
+    if (token) {
+      // /users/{name}/repos always lists PUBLIC repositories, even with a PAT.
+      // Only /user/repos can include private repositories visible to the PAT.
+      const identityResponse = await fetch("https://api.github.com/user", { headers });
+      if (!identityResponse.ok) {
+        throw new Error(`GitHub (${identityResponse.status}): could not identify the configured token owner. Check the GitHub token.`);
+      }
+      const identity = await identityResponse.json();
+      if (identity.login?.toLowerCase() === profile.toLowerCase()) {
+        endpoint = "https://api.github.com/user/repos";
+      } else {
+        // This is someone else's profile: never display the token owner's repos.
+        endpoint = `https://api.github.com/users/${encodeURIComponent(profile)}/repos`;
+      }
+    } else {
+      endpoint = `https://api.github.com/users/${encodeURIComponent(profile)}/repos`;
+    }
+  } else {
+    throw new Error("Unknown repository list type.");
   }
-  throw new Error("Repository list exceeded 10,000 items.");
+
+  const repositories = new Map();
+  for (let page = 1; page <= 100; page++) {
+    const params = new URLSearchParams({ per_page: "100", page: String(page) });
+    if (kind === "repos") {
+      params.set("sort", "updated");
+      if (endpoint.endsWith("/user/repos")) params.set("affiliation", "owner");
+      else params.set("type", "owner");
+    }
+    const response = await fetch(`${endpoint}?${params}`, { headers });
+    if (!response.ok) {
+      throw new Error(`GitHub (${response.status}): could not load repositories (page ${page}). Check token permissions and API limits.`);
+    }
+    const batch = await response.json();
+    if (!Array.isArray(batch)) throw new Error("GitHub returned an invalid repository list.");
+    for (const item of batch) {
+      // /user/repos may also return repos not belonging to the selected profile.
+      if (kind === "repos" && item.owner?.login?.toLowerCase() !== profile.toLowerCase()) continue;
+      if (!item.owner?.login || !item.name) continue;
+      repositories.set(`${item.owner.login.toLowerCase()}/${item.name.toLowerCase()}`, {
+        owner: item.owner.login, name: item.name,
+        private: Boolean(item.private), description: item.description || ""
+      });
+    }
+    if (batch.length < 100) return [...repositories.values()];
+  }
+  throw new Error("Repository list exceeded 10,000 API results.");
 }
 
 // Durable MV3 batch runner: one repository per alarm, with recovery after worker suspension.
