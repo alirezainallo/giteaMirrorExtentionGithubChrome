@@ -1,5 +1,6 @@
 const SETTINGS_KEY = "giteaMirrorSettings";
 const STARRED_PROGRESS_KEY = "giteaStarredMirrorProgress";
+const BATCH_PROGRESS_KEY = "giteaBatchMirrorProgress";
 const PROFILE_STORE_KEY = "giteaMirrorProfiles";
 let activeStarredRun = null;
 
@@ -96,6 +97,68 @@ async function starredRepos(profile) {
     repositories.push(...batch.map((item) => ({ owner: item.owner.login, name: item.name })));
     if (batch.length < 100) return repositories;
   }
+}
+
+async function listGithubRepos(kind, profile) {
+  const config = await settings();
+  const token = config?.githubToken;
+  const username = config?.githubUsername || profile;
+  if (!username) throw new Error("Configure a GitHub username first.");
+  const endpoint = kind === "stars" ? (token ? "https://api.github.com/user/starred" : `https://api.github.com/users/${encodeURIComponent(username)}/starred`) : `https://api.github.com/users/${encodeURIComponent(profile)}/repos`;
+  const repositories = [];
+  for (let page = 1; page <= 100; page++) {
+    const response = await fetch(`${endpoint}?per_page=100&page=${page}&sort=updated`, { headers: { Accept: "application/vnd.github+json", ...(token ? { Authorization: `Bearer ${token}` } : {}) } });
+    if (!response.ok) throw new Error(`GitHub (${response.status}): cannot list repositories`);
+    const batch = await response.json();
+    repositories.push(...batch.map(item => ({ owner: item.owner.login, name: item.name, private: item.private, description: item.description || "" })));
+    if (batch.length < 100) return repositories;
+  }
+  throw new Error("Repository list exceeded 10,000 items.");
+}
+
+let activeBatch = null;
+async function startBatch(profile, kind, selected) {
+  if (activeBatch?.progress.running) return { error: "Another batch is already running." };
+  const config = await settings();
+  if (!config) throw new Error("Configure Gitea first.");
+  if (!Array.isArray(selected) || !selected.length) throw new Error("Select at least one repository.");
+  const unique = [...new Map(selected.map(repo => [repositoryKey(repo), {owner:repo.owner,name:repo.name}])).values()];
+  if (unique.some(repo => !/^[a-zA-Z0-9-]+$/.test(repo.owner) || !/^[a-zA-Z0-9_.-]+$/.test(repo.name))) throw new Error("Invalid repository name.");
+  const progress = { profile, kind, running:true, total:unique.length, processed:0, mirrored:0, queued:0, existing:0, failed:0, skipped:0, cancelled:0, current:null, items:unique.map(repo=>({...repo,status:"pending"})) };
+  activeBatch = { progress, controller:null };
+  await chrome.storage.local.set({[BATCH_PROGRESS_KEY]:progress});
+  // Respond immediately. Each API request is sequential; Gitea cloning itself remains asynchronous.
+  void (async()=>{
+    try {
+      for (const item of progress.items) {
+        if (item.status === "skipped") {progress.processed++;continue;}
+        progress.current = repositoryKey(item);
+        item.status = "checking";
+        const controller = new AbortController(); activeBatch.controller = controller;
+        await chrome.storage.local.set({[BATCH_PROGRESS_KEY]:progress});
+        try {
+          let existing;
+          try { existing = await giteaFetch(config, `/repos/${encodeURIComponent(config.giteaOwner)}/${encodeURIComponent(item.name)}`, {signal:controller.signal}); }
+          catch(e) {if (!e.message.includes("Gitea (404)")) throw e;}
+          if (existing) {item.status = existing.mirror ? "mirrored" : "existing";progress[existing.mirror ? "mirrored" : "existing"]++;}
+          else {item.status="creating";await chrome.storage.local.set({[BATCH_PROGRESS_KEY]:progress});await createMirror(item,controller.signal);item.status="queued";progress.queued++;}
+        } catch(e) {
+          if (item.cancelRequested) {item.status="cancelled";progress.cancelled++; /* Do not delete repositories on ambiguous cancellation. */}
+          else {item.status="failed";item.error=e.message;progress.failed++;}
+        } finally {progress.processed++;progress.current=null;activeBatch.controller=null;await chrome.storage.local.set({[BATCH_PROGRESS_KEY]:progress});}
+      }
+    } finally {progress.running=false;progress.current=null;await chrome.storage.local.set({[BATCH_PROGRESS_KEY]:progress});activeBatch=null;}
+  })().catch(console.error);
+  return {ok:true};
+}
+async function controlBatch(action,key) {
+  const run=activeBatch;
+  if (!run?.progress.running) throw new Error("No active batch.");
+  if (action === "skip") {const item=run.progress.items.find(i=>repositoryKey(i)===key && i.status==="pending");if(!item)throw new Error("Item is not pending.");item.status="skipped";run.progress.skipped++;}
+  else if(action === "skip-remaining") {for(const item of run.progress.items)if(item.status==="pending"){item.status="skipped";run.progress.skipped++;}}
+  else if(action === "cancel-current") {const item=run.progress.items.find(i=>["checking","creating"].includes(i.status));if(!item)throw new Error("No active request.");item.cancelRequested=true;run.controller?.abort();}
+  else throw new Error("Unknown action.");
+  await chrome.storage.local.set({[BATCH_PROGRESS_KEY]:run.progress});return {ok:true};
 }
 
 function sourceCloneUrl(repo, config) {
@@ -294,6 +357,10 @@ async function mirrorStarred(profile) {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   (async () => {
+    if (message.type === "list-batch-repos") return {items:await listGithubRepos(message.kind,message.profile)};
+    if (message.type === "start-batch") return await startBatch(message.profile,message.kind,message.selected);
+    if (message.type === "get-batch-progress") return (await chrome.storage.local.get(BATCH_PROGRESS_KEY))[BATCH_PROGRESS_KEY] || null;
+    if (message.type === "control-batch") return await controlBatch(message.action,message.key);
     if (message.type === "get-settings") return { config: await settings() };
     if (message.type === "save-settings") {
       const config = message.config;

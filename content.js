@@ -1,5 +1,40 @@
+// Batch selection for profile repositories and starred repositories.
+const batchProfileMatch = location.pathname.match(/^\/([^/]+)\/?$/);
+const batchTab = new URLSearchParams(location.search).get("tab");
+const batchKind = batchTab === "stars" ? "stars" : (batchTab === "repositories" || batchTab === null ? "repos" : null);
+const batchProfile = batchProfileMatch?.[1];
+if (batchProfile && batchKind && !document.getElementById("gitea-batch-helper")) {
+  const root=document.createElement("div");root.id="gitea-batch-helper";
+  root.innerHTML='<button id="gitea-batch-button">↻ Mirror repositories</button><section id="gitea-batch-panel" hidden></section>';
+  document.body.append(root);
+  const button=root.querySelector("button"),panel=root.querySelector("section");
+  const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+  const send=async m=>{const r=await chrome.runtime.sendMessage(m);if(r?.error)throw new Error(r.error);return r;};
+  let items=[], selected=new Set(), progress=null, busy=false;
+  const error=e=>{const node=panel.querySelector(".error");if(node)node.textContent=e.message||String(e);};
+  function preview(){
+    panel.innerHTML=`<h3>${batchKind==="stars"?"Starred":"My"} repositories</h3><p>Select repositories, then click Start. No mirrors are created before confirmation.</p><div class="batch-toolbar"><button class="all">Select all</button><button class="none">Select none</button><span>${selected.size} / ${items.length} selected</span></div><ul class="batch-list">${items.map((r,i)=>`<li><label><input type="checkbox" data-index="${i}" ${selected.has(r.owner+"/"+r.name)?"checked":""}><span><b>${esc(r.owner)}/${esc(r.name)}</b><small>${esc(r.description)}</small></span></label></li>`).join("")||"<li>No repositories found.</li>"}</ul><div class="batch-toolbar"><button class="start" ${selected.size?"":"disabled"}>Start mirroring (${selected.size})</button><button class="reload">Refresh list</button></div><div class="error"></div>`;
+    panel.querySelectorAll('input[type="checkbox"]').forEach(el=>el.onchange=()=>{const r=items[Number(el.dataset.index)],key=r.owner+"/"+r.name;el.checked?selected.add(key):selected.delete(key);preview();});
+    panel.querySelector(".all").onclick=()=>{selected=new Set(items.map(r=>r.owner+"/"+r.name));preview();};
+    panel.querySelector(".none").onclick=()=>{selected.clear();preview();};
+    panel.querySelector(".reload").onclick=load;
+    panel.querySelector(".start").onclick=async()=>{try{panel.querySelector(".start").disabled=true;await send({type:"start-batch",profile:batchProfile,kind:batchKind,selected:items.filter(r=>selected.has(r.owner+"/"+r.name))});progress=await send({type:"get-batch-progress"});renderProgress();}catch(e){error(e);}};
+  }
+  function renderProgress(){
+    if(!progress)return preview();
+    const pct=progress.total?Math.round(progress.processed*100/progress.total):100;
+    panel.innerHTML=`<h3>Mirror queue — ${progress.running?"Running":"Completed"}</h3><p>${progress.processed}/${progress.total} processed (${pct}%). ${progress.queued} queued, ${progress.mirrored} mirrored, ${progress.existing} existing, ${progress.failed} failed.</p><div class="mirror-progress"><i style="width:${pct}%"></i></div><p>Current: ${esc(progress.current||"None")}</p><div class="batch-toolbar">${progress.running?'<button class="cancel-current">Cancel current request</button><button class="skip-remaining">Skip remaining</button>':'<button class="new-batch">New selection</button>'}</div><ul class="batch-list">${progress.items.map(r=>`<li><span class="mirror-state ${esc(r.status)}">${esc(r.status)}</span> ${esc(r.owner)}/${esc(r.name)} ${r.status==="pending"?`<button class="skip" data-key="${esc(r.owner+"/"+r.name)}">Skip</button>`:""}${r.error?`<small>${esc(r.error)}</small>`:""}</li>`).join("")}</ul><div class="error"></div>`;
+    panel.querySelector(".new-batch")?.addEventListener("click",load);
+    for(const action of ["cancel-current","skip-remaining"]){panel.querySelector("."+action)?.addEventListener("click",async()=>{try{await send({type:"control-batch",action});}catch(e){error(e);}});}
+    panel.querySelectorAll(".skip").forEach(el=>el.onclick=async()=>{try{await send({type:"control-batch",action:"skip",key:el.dataset.key});}catch(e){error(e);}});
+  }
+  async function load(){if(busy)return;busy=true;panel.innerHTML="<p>Loading GitHub repositories…</p>";try{const r=await send({type:"list-batch-repos",kind:batchKind,profile:batchProfile});items=r.items;selected=new Set(items.map(r=>r.owner+"/"+r.name));progress=null;preview();}catch(e){panel.innerHTML='<div class="error"></div><button class="retry">Retry</button>';error(e);panel.querySelector(".retry").onclick=load;}finally{busy=false;}}
+  button.onclick=async()=>{panel.hidden=!panel.hidden;if(panel.hidden)return;try{const saved=await send({type:"get-batch-progress"});if(saved?.profile===batchProfile&&saved.kind===batchKind){progress=saved;renderProgress();}else await load();}catch(e){error(e);}};
+  chrome.storage.onChanged.addListener((changes,area)=>{if(area==="local"&&changes.giteaBatchMirrorProgress){const p=changes.giteaBatchMirrorProgress.newValue;if(p?.profile===batchProfile&&p.kind===batchKind&&progress){progress=p;if(!panel.hidden)renderProgress();}}});
+}
+
 const starredProfile = new URLSearchParams(location.search).get("tab") === "stars" && location.pathname.match(/^\/([^/]+)\/?$/)?.[1];
-if (starredProfile && !document.getElementById("gitea-starred-mirror-helper")) {
+if (starredProfile && !document.getElementById("gitea-batch-helper") && !document.getElementById("gitea-starred-mirror-helper")) {
   const root = document.createElement("div");
   root.id = "gitea-starred-mirror-helper";
   root.innerHTML = `<button id="gitea-starred-mirror-button">★ Mirror starred repositories</button><section id="gitea-starred-mirror-panel" hidden></section>`;
@@ -69,7 +104,7 @@ const nwo = document.querySelector('meta[name="octolytics-dimension-repository_n
 const pathMatch = location.pathname.match(/^\/([^/]+)\/([^/]+)\/?(?:$|tree\/|blob\/|issues|pulls|actions|commits|settings)/);
 const githubReservedOwners = new Set(["settings", "notifications", "marketplace", "features", "topics", "orgs", "apps", "sponsors", "explore", "login", "signup", "site", "new", "search", "collections", "events", "about", "contact", "security", "pricing", "readme"]);
 const match = nwo?.match(/^([^/]+)\/([^/]+)$/) || (pathMatch && !githubReservedOwners.has(pathMatch[1]) ? pathMatch : null);
-if (!match && !starredProfile && !document.getElementById("gitea-settings-helper")) {
+if (!match && !starredProfile && !batchProfile && !document.getElementById("gitea-settings-helper")) {
   const root = document.createElement("div");
   root.id = "gitea-settings-helper";
   root.innerHTML = `<button id="gitea-settings-button" title="Gitea Mirror Helper settings">⚙</button><section id="gitea-settings-panel" hidden></section>`;

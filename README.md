@@ -83,3 +83,9 @@ On a GitHub profile's **Stars** tab (for example, `https://github.com/your-name?
 - If you see `GitHub (404)`, verify that the fine-grained token has Repository access to that private repository, or select **All repositories**.
 - For Gitea errors, verify the base URL, token validity, and permission to create a repository for the selected user or organization.
 - You can revoke either token in GitHub or Gitea settings at any time and create a replacement.
+
+## Selective batch mirroring (v1.1)
+
+Open your GitHub profile Repositories tab (`/username?tab=repositories`) or Stars tab (`/username?tab=stars`). Click **Mirror repositories**, review the fetched list, select/deselect entries, and click **Start mirroring**. Selected repositories are processed sequentially; existing Gitea repositories are never overwritten. The queue displays live progress and supports skipping pending entries and aborting the current HTTP request. Aborting an in-flight migration does not guarantee Gitea cancels server-side work; check the destination manually. Gitea may continue cloning queued repositories concurrently after each API call returns.
+
+Note: the batch currently runs in a Manifest V3 service worker and may be interrupted if Chrome terminates the worker. A durable alarm-based queue is recommended for very large batches. For private repositories, ensure your token has access to the relevant repositories.
